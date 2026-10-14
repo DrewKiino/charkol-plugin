@@ -3,12 +3,19 @@ set -eu
 
 plugin_root=$(cd "$(dirname "$0")/.." && pwd)
 installed=/Applications/Charkol.app/Contents/MacOS
+app_folder="$HOME/Library/Application Support/com.coconutestates.Charkol"
+
+if [ -f "$plugin_root/channel" ]; then
+  CHARKOL_CHANNEL=$(cat "$plugin_root/channel")
+  export CHARKOL_CHANNEL
+  app_folder="$app_folder.$CHARKOL_CHANNEL"
+fi
 
 if [ -x "$installed/charkol" ]; then
   app_dir="$installed"
 else
   release=$(cat "$plugin_root/release")
-  runtime="$HOME/Library/Application Support/com.coconutestates.Charkol/runtime/$release"
+  runtime="$app_folder/runtime/$release"
   app_dir="$runtime/Charkol.app/Contents/MacOS"
   if [ ! -x "$app_dir/charkol" ]; then
     if [ "${1:-}" = hook ]; then
