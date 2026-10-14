@@ -1,0 +1,8 @@
+[
+  {
+    "name": "setup",
+    "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/charkol\" first-run",
+    "description": "Setting up Charkol on this machine",
+    "when": "always"
+  }
+]
