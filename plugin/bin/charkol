@@ -1,0 +1,36 @@
+#!/bin/sh
+set -eu
+
+plugin_root=$(cd "$(dirname "$0")/.." && pwd)
+installed=/Applications/Charkol.app/Contents/MacOS
+
+if [ -x "$installed/charkol" ]; then
+  app_dir="$installed"
+else
+  release=$(cat "$plugin_root/release")
+  runtime="$HOME/Library/Application Support/com.coconutestates.Charkol/runtime/$release"
+  app_dir="$runtime/Charkol.app/Contents/MacOS"
+  if [ ! -x "$app_dir/charkol" ]; then
+    if [ "${1:-}" = hook ]; then
+      exit 0
+    fi
+    download=$(mktemp -d)
+    gh release download "$release" -R DrewKiino/charkol -p charkol-macos-arm64.zip -D "$download" >&2
+    staging="$runtime.$$"
+    ditto -x -k "$download/charkol-macos-arm64.zip" "$staging"
+    rm -rf "$download"
+    mkdir -p "$(dirname "$runtime")"
+    if [ -e "$runtime" ]; then
+      rm -rf "$staging"
+    else
+      mv "$staging" "$runtime"
+    fi
+  fi
+fi
+
+case "${1:-}" in
+  watch) exec "$app_dir/charkol-bridge" watch ;;
+  hook) exec "$app_dir/charkol-bridge" hook ;;
+  mcp) exec "$app_dir/charkol-bridge" ;;
+  *) exec "$app_dir/charkol" "$@" ;;
+esac

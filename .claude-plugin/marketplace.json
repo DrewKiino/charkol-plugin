@@ -1,0 +1,14 @@
+{
+  "name": "charkol",
+  "description": "Charkol, the design workbench whose designs stay on your Mac",
+  "owner": {
+    "name": "Andrew Aquino"
+  },
+  "plugins": [
+    {
+      "name": "charkol",
+      "source": "./plugin",
+      "description": "Design in Charkol with your own Claude Code"
+    }
+  ]
+}
