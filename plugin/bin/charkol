@@ -23,6 +23,7 @@ runtimes="$app_folder/runtime"
 current_file="$runtimes/current"
 previous_file="$runtimes/previous"
 checked_file="$runtimes/checked"
+required_release=$(cat "$plugin_root/app-release" 2>/dev/null || true)
 
 runtime_bin() {
   for bundle in "$runtimes/$1"/*.app; do
@@ -72,6 +73,14 @@ switch_to() {
   printf '%s\n' "$1" > "$current_file"
 }
 
+version_of() {
+  printf '%s\n' "${1#v}"
+}
+
+older_than_required() {
+  [ -n "$required_release" ] && [ "$1" != "$required_release" ] && [ "$(printf '%s\n%s\n' "$(version_of "$1")" "$(version_of "$required_release")" | sort -V | head -1)" = "$(version_of "$1")" ]
+}
+
 release_check_due() {
   [ ! -f "$checked_file" ] || [ $(( $(date +%s) - $(stat -f %m "$checked_file") )) -ge "$release_check_secs" ]
 }
@@ -93,6 +102,15 @@ else
     first-run|open) follow_latest_release ;;
   esac
   release=$(current_release)
+  if [ -n "$release" ] && older_than_required "$release"; then
+    if [ "${1:-}" = hook ]; then
+      exit 0
+    fi
+    if fetch_release "$required_release"; then
+      switch_to "$required_release"
+      release=$required_release
+    fi
+  fi
   if [ -z "$release" ] || [ ! -x "$(runtime_bin "$release")/charkol" ]; then
     if [ "${1:-}" = hook ]; then
       exit 0
