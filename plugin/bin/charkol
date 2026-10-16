@@ -2,37 +2,110 @@
 set -eu
 
 plugin_root=$(cd "$(dirname "$0")/.." && pwd)
-installed=/Applications/Charkol.app/Contents/MacOS
+desktop_app=/Applications/Charkol.app
 app_folder="$HOME/Library/Application Support/com.coconutestates.Charkol"
+release_repo=DrewKiino/charkol-plugin
+release_asset=charkol-macos-arm64.zip
+release_check_secs=86400
 
 if [ -f "$plugin_root/channel" ]; then
   CHARKOL_CHANNEL=$(cat "$plugin_root/channel")
   export CHARKOL_CHANNEL
   app_folder="$app_folder.$CHARKOL_CHANNEL"
+  release_repo="$release_repo-$CHARKOL_CHANNEL"
+  case "$CHARKOL_CHANNEL" in
+    dev) desktop_app="/Applications/Charkol Dev.app" ;;
+  esac
 fi
+desktop_app="${CHARKOL_DESKTOP_APP:-$desktop_app}"
 
-if [ -x "$installed/charkol" ]; then
-  app_dir="$installed"
+runtimes="$app_folder/runtime"
+current_file="$runtimes/current"
+previous_file="$runtimes/previous"
+checked_file="$runtimes/checked"
+
+runtime_bin() {
+  for bundle in "$runtimes/$1"/*.app; do
+    printf '%s/Contents/MacOS' "$bundle"
+    return
+  done
+}
+
+current_release() {
+  cat "$current_file" 2>/dev/null || true
+}
+
+latest_release() {
+  curl -fsSI "https://github.com/$release_repo/releases/latest" | tr -d '\r' | sed -n 's#^[Ll]ocation: .*/releases/tag/##p'
+}
+
+fetch_release() {
+  target="$runtimes/$1"
+  if [ -x "$(runtime_bin "$1")/charkol" ]; then
+    return 0
+  fi
+  mkdir -p "$runtimes"
+  archive=$(mktemp -d)
+  if ! curl -fsSL "https://github.com/$release_repo/releases/download/$1/$release_asset" -o "$archive/$release_asset"; then
+    rm -rf "$archive"
+    return 1
+  fi
+  staging="$target.$$"
+  ditto -x -k "$archive/$release_asset" "$staging"
+  rm -rf "$archive"
+  if [ -e "$target" ]; then
+    rm -rf "$staging"
+  else
+    mv "$staging" "$target"
+  fi
+}
+
+switch_to() {
+  current=$(current_release)
+  if [ -n "$current" ] && [ "$current" != "$1" ]; then
+    retired=$(cat "$previous_file" 2>/dev/null || true)
+    if [ -n "$retired" ] && [ "$retired" != "$1" ]; then
+      rm -rf "${runtimes:?}/$retired"
+    fi
+    printf '%s\n' "$current" > "$previous_file"
+  fi
+  printf '%s\n' "$1" > "$current_file"
+}
+
+release_check_due() {
+  [ ! -f "$checked_file" ] || [ $(( $(date +%s) - $(stat -f %m "$checked_file") )) -ge "$release_check_secs" ]
+}
+
+follow_latest_release() {
+  release_check_due || return 0
+  mkdir -p "$runtimes"
+  touch "$checked_file"
+  latest=$(latest_release)
+  if [ -n "$latest" ] && [ "$latest" != "$(current_release)" ] && fetch_release "$latest"; then
+    switch_to "$latest"
+  fi
+}
+
+if [ -x "$desktop_app/Contents/MacOS/charkol" ]; then
+  app_dir="$desktop_app/Contents/MacOS"
 else
-  release=$(cat "$plugin_root/release")
-  runtime="$app_folder/runtime/$release"
-  app_dir="$runtime/Charkol.app/Contents/MacOS"
-  if [ ! -x "$app_dir/charkol" ]; then
+  case "${1:-}" in
+    first-run|open) follow_latest_release ;;
+  esac
+  release=$(current_release)
+  if [ -z "$release" ] || [ ! -x "$(runtime_bin "$release")/charkol" ]; then
     if [ "${1:-}" = hook ]; then
       exit 0
     fi
-    download=$(mktemp -d)
-    gh release download "$release" -R DrewKiino/charkol -p charkol-macos-arm64.zip -D "$download" >&2
-    staging="$runtime.$$"
-    ditto -x -k "$download/charkol-macos-arm64.zip" "$staging"
-    rm -rf "$download"
-    mkdir -p "$(dirname "$runtime")"
-    if [ -e "$runtime" ]; then
-      rm -rf "$staging"
-    else
-      mv "$staging" "$runtime"
+    release=$(latest_release)
+    if [ -z "$release" ]; then
+      echo "Couldn't find a Charkol release at github.com/$release_repo. Check your connection and try again." >&2
+      exit 1
     fi
+    fetch_release "$release"
+    switch_to "$release"
   fi
+  app_dir=$(runtime_bin "$release")
 fi
 
 case "${1:-}" in
