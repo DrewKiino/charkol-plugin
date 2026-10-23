@@ -4,131 +4,78 @@ set -eu
 plugin_root=$(cd "$(dirname "$0")/.." && pwd)
 desktop_app=/Applications/Charkol.app
 app_folder="$HOME/Library/Application Support/com.coconutestates.Charkol"
-release_repo=DrewKiino/charkol-plugin
-release_asset=charkol-macos-arm64.zip
-release_check_secs=86400
+download_site=https://download.charkol.ai
+runtime_zip=charkol-runtime-macos-arm64.zip
+signed_by_charkol='anchor apple generic and certificate leaf[subject.OU] = "2NC533SE3E"'
 
 if [ -f "$plugin_root/channel" ]; then
   CHARKOL_CHANNEL=$(cat "$plugin_root/channel")
   export CHARKOL_CHANNEL
   app_folder="$app_folder.$CHARKOL_CHANNEL"
-  release_repo="$release_repo-$CHARKOL_CHANNEL"
+  download_site="https://download.$CHARKOL_CHANNEL.charkol.ai"
   case "$CHARKOL_CHANNEL" in
     dev) desktop_app="/Applications/Charkol Dev.app" ;;
   esac
 fi
 desktop_app="${CHARKOL_DESKTOP_APP:-$desktop_app}"
+download_site="${CHARKOL_DOWNLOAD_URL:-$download_site}"
 
 runtimes="$app_folder/runtime"
-current_file="$runtimes/current"
-previous_file="$runtimes/previous"
-checked_file="$runtimes/checked"
-required_release=$(cat "$plugin_root/app-release" 2>/dev/null || true)
+required_version=$(cat "$plugin_root/runtime-version" 2>/dev/null || true)
 
-runtime_bin() {
-  for bundle in "$runtimes/$1"/*.app; do
-    printf '%s/Contents/MacOS' "$bundle"
-    return
-  done
-}
-
-current_release() {
-  cat "$current_file" 2>/dev/null || true
-}
-
-latest_release() {
-  curl -fsSI "https://github.com/$release_repo/releases/latest" | tr -d '\r' | sed -n 's#^[Ll]ocation: .*/releases/tag/##p'
-}
-
-fetch_release() {
-  target="$runtimes/$1"
-  if [ -x "$(runtime_bin "$1")/charkol" ]; then
-    return 0
-  fi
-  mkdir -p "$runtimes"
-  archive=$(mktemp -d)
-  if ! curl -fsSL "https://github.com/$release_repo/releases/download/$1/$release_asset" -o "$archive/$release_asset"; then
-    rm -rf "$archive"
-    return 1
-  fi
-  staging="$target.$$"
-  ditto -x -k "$archive/$release_asset" "$staging"
-  rm -rf "$archive"
-  if [ -e "$target" ]; then
-    rm -rf "$staging"
-  else
-    mv "$staging" "$target"
-  fi
-}
-
-switch_to() {
-  current=$(current_release)
-  if [ -n "$current" ] && [ "$current" != "$1" ]; then
-    retired=$(cat "$previous_file" 2>/dev/null || true)
-    if [ -n "$retired" ] && [ "$retired" != "$1" ]; then
-      rm -rf "${runtimes:?}/$retired"
-    fi
-    printf '%s\n' "$current" > "$previous_file"
-  fi
-  printf '%s\n' "$1" > "$current_file"
-}
-
-version_of() {
-  printf '%s\n' "${1#v}"
+installed_version() {
+  version=$(cat "$runtimes/current" 2>/dev/null || true)
+  [ -n "$version" ] && [ -x "$runtimes/$version/charkol" ] && printf '%s\n' "$version"
 }
 
 older_than_required() {
-  [ -n "$required_release" ] && [ "$1" != "$required_release" ] && [ "$(printf '%s\n%s\n' "$(version_of "$1")" "$(version_of "$required_release")" | sort -V | head -1)" = "$(version_of "$1")" ]
+  [ -n "$required_version" ] && [ "$1" != "$required_version" ] && [ "$(printf '%s\n%s\n' "$1" "$required_version" | sort -V | head -1)" = "$1" ]
 }
 
-release_check_due() {
-  [ ! -f "$checked_file" ] || [ $(( $(date +%s) - $(stat -f %m "$checked_file") )) -ge "$release_check_secs" ]
+signed_by_charkol() {
+  codesign --verify --strict -R="$signed_by_charkol" "$1/charkol" 2>/dev/null && codesign --verify --strict -R="$signed_by_charkol" "$1/charkol-bridge" 2>/dev/null
 }
 
-follow_latest_release() {
-  release_check_due || return 0
+install_latest() {
   mkdir -p "$runtimes"
-  touch "$checked_file"
-  latest=$(latest_release)
-  if [ -n "$latest" ] && [ "$latest" != "$(current_release)" ] && fetch_release "$latest"; then
-    switch_to "$latest"
+  latest=$(curl -fsL "$download_site/latest" | tr -d '[:space:]')
+  staging=$(mktemp -d "$runtimes/download.XXXXXX")
+  if [ -z "$latest" ] || ! curl -fsL "$download_site/$latest/$runtime_zip" -o "$staging/$runtime_zip" || ! ditto -x -k "$staging/$runtime_zip" "$staging/$latest"; then
+    echo "Couldn't download Charkol from $download_site. Check your connection and try again." >&2
+  elif ! signed_by_charkol "$staging/$latest"; then
+    echo "The Charkol download from $download_site isn't signed by Charkol, so it wasn't installed." >&2
+  elif [ ! -e "$runtimes/$latest" ]; then
+    mv "$staging/$latest" "$runtimes/$latest"
   fi
+  rm -rf "$staging"
+  [ -n "$latest" ] && signed_by_charkol "$runtimes/$latest" || return 1
+  printf '%s\n' "$latest" > "$runtimes/current"
 }
 
 if [ -x "$desktop_app/Contents/MacOS/charkol" ]; then
-  app_dir="$desktop_app/Contents/MacOS"
+  runtime="$desktop_app/Contents/MacOS"
 else
-  case "${1:-}" in
-    first-run|open) follow_latest_release ;;
-  esac
-  release=$(current_release)
-  if [ -n "$release" ] && older_than_required "$release"; then
+  version=$(installed_version || true)
+  if [ -z "$version" ] || older_than_required "$version"; then
     if [ "${1:-}" = hook ]; then
       exit 0
     fi
-    if fetch_release "$required_release"; then
-      switch_to "$required_release"
-      release=$required_release
-    fi
-  fi
-  if [ -z "$release" ] || [ ! -x "$(runtime_bin "$release")/charkol" ]; then
-    if [ "${1:-}" = hook ]; then
-      exit 0
-    fi
-    release=$(latest_release)
-    if [ -z "$release" ]; then
-      echo "Couldn't find a Charkol release at github.com/$release_repo. Check your connection and try again." >&2
+    if install_latest; then
+      version=$(installed_version)
+    elif [ -z "$version" ]; then
       exit 1
     fi
-    fetch_release "$release"
-    switch_to "$release"
   fi
-  app_dir=$(runtime_bin "$release")
+  runtime="$runtimes/$version"
 fi
 
+CHARKOL_LAUNCHER="$plugin_root/bin/$(basename "$0")"
+export CHARKOL_LAUNCHER
+
 case "${1:-}" in
-  watch) exec "$app_dir/charkol-bridge" watch ;;
-  hook) exec "$app_dir/charkol-bridge" hook ;;
-  mcp) exec "$app_dir/charkol-bridge" ;;
-  *) exec "$app_dir/charkol" "$@" ;;
+  tasks) exec "$runtime/charkol-bridge" "$@" ;;
+  watch) exec "$runtime/charkol-bridge" watch ;;
+  hook) exec "$runtime/charkol-bridge" hook ;;
+  mcp) exec "$runtime/charkol-bridge" ;;
+  *) exec "$runtime/charkol" "$@" ;;
 esac
